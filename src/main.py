@@ -1,53 +1,154 @@
 import os
+import os
 import pandas as pd
 from candidate_generation import fetch_places_candidates
-from webscraper import scrape_many
 from model import SimilarityModel
+from pathlib import Path
+from candidate_scraper import crawl_site, infer_profile
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "YOUR_KEY_HERE")
-PDL_DATA_PATH = "path/to.csv"
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent
+BASELINE_DATA_PATH = project_root / "Indiana_EXIM_Exporter_Profiles_working_v20.xlsx"
 
-PRE_SCRAPED_BASELINES = {} # Ex: "Cook Medical": "Cook Medical is a privately owned medical device manufacturing company...
+def load_dynamic_baselines(filepath: str) -> dict:
+    """Reads the Excel file and combines profile columns into a single text block per company."""
+    df = pd.read_excel(filepath, sheet_name='Company Profiles')
+    
+    # Filter to only verified exporters with a website
+    valid_df = df[
+        (df['Exporter_Verification'].str.contains('verified|supported', case=False, na=False)) & 
+        (df['Company_Website'].notna())
+    ]
+    
+    baselines = {}
+    for _, row in valid_df.iterrows():
+        name = row['Company_Name_Normalized']
+        # Combine the high-value text fields to build a robust baseline signature
+        text_components = [
+            str(row.get('Products_Product_Families', '')),
+            str(row.get('Capabilities_Manufacturing', '')),
+            str(row.get('Capabilities_Engineering_Design', '')),
+            str(row.get('Industries_Served', ''))
+        ]
+        
+        # Clean up empty strings or 'nan' values from pandas
+        clean_text = " ".join([t for t in text_components if t.strip() and str(t).lower() != 'nan'])
+        if clean_text:
+            baselines[name] = clean_text
+            
+    return baselines
 
-def main():
-    print("1. Loading pre-scraped baseline data...")
+def run_pipeline(api_key: str, query: str, max_results: int) -> pd.DataFrame:
+    print("1. Loading verified EXIM baselines...")
+    baseline_dict = load_dynamic_baselines(BASELINE_DATA_PATH)
+    
+    # 2. Initialize Model
     similarity_model = SimilarityModel()
-    # Pass the entire dictionary so the model knows the names
-    similarity_model.fit_baselines(PRE_SCRAPED_BASELINES)
+    similarity_model.fit_baselines(baseline_dict)
 
-    print("2. Fetching candidates from Google Places...")
-    query = "medical device manufacturing in Indiana"
-    candidates_df = fetch_places_candidates(GOOGLE_API_KEY, query, max_results=30)
-
+    print("3. Fetching candidates from Google Places...")
+    candidates_df = fetch_places_candidates(api_key, query, max_results=max_results)
+    
     if candidates_df.empty:
-        print("No candidates found.")
-        return
+        return pd.DataFrame()
 
-    print(f"3. Scraping {len(candidates_df)} candidates...")
-    candidate_urls = candidates_df['website'].dropna().tolist()
-    scrape_results = scrape_many(candidate_urls)
+    if 'website' in candidates_df.columns:
+        candidates_df['website'] = candidates_df['website'].fillna("")
 
-    text_mapping = {res['url']: res['text'] for res in scrape_results}
-    candidates_df['scraped_text'] = candidates_df['website'].map(text_mapping).fillna("")
+    profiles = []
+    
+    print(f"4. Profiling and scoring {len(candidates_df)} candidates...")
+    for _, row in candidates_df.iterrows():
+        company_name = row.get("name", "Unknown")
+        website = row.get("website", "")
+        address = row.get("address", "Indiana") 
+        
+        profile_input = pd.Series({
+            "Company_Name_Normalized": company_name,
+            "Company_Website_Input": website,
+            "City_Normalized": address, 
+            "State_Normalized": "Indiana"
+        })
+        
+        if website:
+            pages = crawl_site(company=company_name, seed_url=website, max_pages=5, timeout=10, delay=0.5)
+            profile_data, _ = infer_profile(profile_input, pages)
+            
+            # Combine the exact same types of text we used for the baselines
+            candidate_text = " ".join([
+                str(profile_data.get('Products_Product_Families', '')),
+                str(profile_data.get('Capabilities_Manufacturing', '')),
+                str(profile_data.get('Capabilities_Engineering_Design', '')),
+                str(profile_data.get('Industries_Served', ''))
+            ])
+        else:
+            profile_data = profile_input.to_dict()
+            profile_data["Website_Check"] = "No website available to crawl"
+            candidate_text = ""
+            
+        # Score the candidate against the EXIM baseline vectors
+        score, best_match = similarity_model.score_candidate(candidate_text)
+        
+        profile_data['Similarity_Score'] = score
+        profile_data['Best_Match'] = best_match
+        profile_data['Score'] = f"{score * 100:.2f}%"
+        
+        profiles.append(profile_data)
+        
+    final_df = pd.DataFrame(profiles)
+    
+    if 'Similarity_Score' in final_df.columns:
+        final_df = final_df.sort_values(by='Similarity_Score', ascending=False)
+        
+    display_columns = [
+        'Company_Name_Normalized', 'Score', 'Best_Match', 'Company_Website_Final', 
+        'Products_Product_Families', 'Capabilities_Manufacturing', 
+        'Certifications_Website_Claims', 'Industries_Served'
+    ]
+    
+    display_columns = [col for col in display_columns if col in final_df.columns]
+    
+    return final_df[display_columns]
 
-    print("4. Scoring candidates against baseline...")
-    # Apply now returns a tuple: (score, best_match_name)
-    scores_and_matches = candidates_df['scraped_text'].apply(
-        lambda txt: similarity_model.score_candidate(txt) if txt else (0.0, "None")
-    )
+# def main():
+#     print("1. Loading pre-scraped baseline data...")
+#     similarity_model = SimilarityModel()
+#     # Pass the entire dictionary so the model knows the names
+#     similarity_model.fit_baselines(PRE_SCRAPED_BASELINES)
 
-    # Split the tuples into two separate columns
-    candidates_df['similarity_score'] = [x[0] for x in scores_and_matches]
-    candidates_df['best_match'] = [x[1] for x in scores_and_matches]
+#     print("2. Fetching candidates from Google Places...")
+#     query = "medical device manufacturing in Indiana"
+#     candidates_df = fetch_places_candidates(GOOGLE_API_KEY, query, max_results=30)
 
-    top_candidates = candidates_df.sort_values(by='similarity_score', ascending=False)
+#     if candidates_df.empty:
+#         print("No candidates found.")
+#         return
 
-    print("\n--- TOP EXPORT-READY CANDIDATES ---")
-    for _, row in top_candidates.iterrows():
-        name = row.get('name', 'Unknown')
-        score = row.get('similarity_score', 0.0)
-        best_match = row.get('best_match', 'None')
-        print(f"{name} | Score: {score * 100:.2f}% (Matches: {best_match}) | URL: {row.get('website')}")
+#     print(f"3. Scraping {len(candidates_df)} candidates...")
+#     candidate_urls = candidates_df['website'].dropna().tolist()
+#     scrape_results = scrape_many(candidate_urls)
 
-if __name__ == "__main__":
-    main()
+#     text_mapping = {res['url']: res['text'] for res in scrape_results}
+#     candidates_df['scraped_text'] = candidates_df['website'].map(text_mapping).fillna("")
+
+#     print("4. Scoring candidates against baseline...")
+#     # Apply now returns a tuple: (score, best_match_name)
+#     scores_and_matches = candidates_df['scraped_text'].apply(
+#         lambda txt: similarity_model.score_candidate(txt) if txt else (0.0, "None")
+#     )
+
+#     # Split the tuples into two separate columns
+#     candidates_df['similarity_score'] = [x[0] for x in scores_and_matches]
+#     candidates_df['best_match'] = [x[1] for x in scores_and_matches]
+
+#     top_candidates = candidates_df.sort_values(by='similarity_score', ascending=False)
+
+#     print("\n--- TOP EXPORT-READY CANDIDATES ---")
+#     for _, row in top_candidates.iterrows():
+#         name = row.get('name', 'Unknown')
+#         score = row.get('similarity_score', 0.0)
+#         best_match = row.get('best_match', 'None')
+#         print(f"{name} | Score: {score * 100:.2f}% (Matches: {best_match}) | URL: {row.get('website')}")
+
+# if __name__ == "__main__":
+#     main()
