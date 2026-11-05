@@ -60,40 +60,6 @@ def fetch_places_candidates(api_key: str, query: str, max_results: int = 60) -> 
     # Ensure we return exactly the requested number if we slightly overshot
     return df.head(max_results)
 
-# def fetch_places_candidates(api_key: str, query: str, max_results: int = 5) -> pd.DataFrame:
-#     """Hits Google Places API and returns a DataFrame of candidates."""
-#     endpoint = "https://places.googleapis.com/v1/places:searchText"
-#     headers = {
-#         "Content-Type": "application/json",
-#         "X-Goog-Api-Key": api_key,
-#         "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.websiteUri"
-#     }
-#     payload = {
-#         "textQuery": query,
-#         "maxResultCount": max_results
-#     }
-
-#     response = requests.post(endpoint, headers=headers, json=payload)
-#     if response.status_code != 200:
-#         print(f"Error {response.status_code}: {response.text}")
-#         return pd.DataFrame()
-
-#     places = response.json().get("places", [])
-#     df = pd.json_normalize(places)
-
-#     if df.empty:
-#         return df
-
-#     df = df.rename(columns={
-#         "displayName.text": "name",
-#         "formattedAddress": "address",
-#         "websiteUri": "website"
-#     })
-
-#     if "displayName.languageCode" in df.columns:
-#         df = df.drop(columns=["displayName.languageCode"])
-
-#     return df
 
 def merge_with_company_data(places_df: pd.DataFrame, pdl_csv_path: str) -> pd.DataFrame:
     """Merges Google Places candidates with local PDL company data based on name."""
