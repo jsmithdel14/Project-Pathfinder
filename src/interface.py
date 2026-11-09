@@ -10,7 +10,7 @@ st.sidebar.header("Configuration")
 api_key = st.sidebar.text_input("Google API Key", type="password")
 query = st.sidebar.text_input("Search Query", "medical device manufacturing in Indiana")
 # Slider capped at 20 to respect the Google Places single-call limit
-max_results = st.sidebar.slider("Max Candidates", 1, 20, 20) 
+max_results = st.sidebar.slider("Max Candidates", 1, 60, 20)
 
 if st.button("Generate & Evaluate Candidates"):
     if not api_key:
