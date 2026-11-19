@@ -1,8 +1,6 @@
-import os
-import os
 import pandas as pd
 from candidate_generation import fetch_places_candidates
-from model import SimilarityModel
+from model import SimilarityModel, CANDIDATE_FIELD_GROUPS
 from pathlib import Path
 from candidate_scraper import crawl_site, infer_profile
 
@@ -10,54 +8,26 @@ script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent
 BASELINE_DATA_PATH = project_root / "Indiana_EXIM_Exporter_Profiles_working_v20.xlsx"
 
-def load_dynamic_baselines(filepath: str) -> dict:
-    """Reads the Excel file and combines profile columns into a single text block per company."""
-    df = pd.read_excel(filepath, sheet_name='Company Profiles')
-    
-    # Filter to only verified exporters with a website
-    valid_df = df[
-        (df['Exporter_Verification'].str.contains('verified|supported', case=False, na=False)) & 
-        (df['Company_Website'].notna())
-    ]
-    
-    baselines = {}
-    for _, row in valid_df.iterrows():
-        name = row['Company_Name_Normalized']
-        # Combine the high-value text fields to build a robust baseline signature
-        text_components = [
-            str(row.get('Products_Product_Families', '')),
-            str(row.get('Capabilities_Manufacturing', '')),
-            str(row.get('Capabilities_Engineering_Design', '')),
-            str(row.get('Industries_Served', ''))
-        ]
-        
-        # Clean up empty strings or 'nan' values from pandas
-        clean_text = " ".join([t for t in text_components if t.strip() and str(t).lower() != 'nan'])
-        if clean_text:
-            baselines[name] = clean_text
-            
-    return baselines
-
-def run_pipeline(api_key: str, query: str, max_results: int) -> pd.DataFrame:
+def run_pipeline(api_key: str, query: str, max_results: int):
     print("1. Loading verified EXIM baselines...")
-    baseline_dict = load_dynamic_baselines(BASELINE_DATA_PATH)
+    baseline_df = pd.read_excel(BASELINE_DATA_PATH, sheet_name='Company Profiles')
     
     # 2. Initialize Model
     similarity_model = SimilarityModel()
-    similarity_model.fit_baselines(baseline_dict)
+    similarity_model.fit_baselines(baseline_df)
 
     print("3. Fetching candidates from Google Places...")
     candidates_df = fetch_places_candidates(api_key, query, max_results=max_results)
     
     if candidates_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     if 'website' in candidates_df.columns:
         candidates_df['website'] = candidates_df['website'].fillna("")
 
     profiles = []
     
-    print(f"4. Profiling and scoring {len(candidates_df)} candidates...")
+    print(f"4. Profiling and scraping {len(candidates_df)} candidates...")
     for _, row in candidates_df.iterrows():
         company_name = row.get("name", "Unknown")
         website = row.get("website", "")
@@ -73,39 +43,51 @@ def run_pipeline(api_key: str, query: str, max_results: int) -> pd.DataFrame:
         if website:
             pages = crawl_site(company=company_name, seed_url=website, max_pages=5, timeout=10, delay=0.5)
             profile_data, _ = infer_profile(profile_input, pages)
-            
-            # Combine the exact same types of text we used for the baselines
-            candidate_text = " ".join([
-                str(profile_data.get('Products_Product_Families', '')),
-                str(profile_data.get('Capabilities_Manufacturing', '')),
-                str(profile_data.get('Capabilities_Engineering_Design', '')),
-                str(profile_data.get('Industries_Served', ''))
-            ])
         else:
             profile_data = profile_input.to_dict()
             profile_data["Website_Check"] = "No website available to crawl"
-            candidate_text = ""
             
-        # Score the candidate against the EXIM baseline vectors
-        score, best_match = similarity_model.score_candidate(candidate_text)
-        
-        profile_data['Similarity_Score'] = score
-        profile_data['Best_Match'] = best_match
-        profile_data['Score'] = f"{score * 100:.2f}%"
-        
         profiles.append(profile_data)
         
-    final_df = pd.DataFrame(profiles)
+    scraped_df = pd.DataFrame(profiles)
     
-    if 'Similarity_Score' in final_df.columns:
-        final_df = final_df.sort_values(by='Similarity_Score', ascending=False)
+    # Pad scraped_df with any missing columns required by the model's strict validation
+    required_candidate_cols = ["Company_Name_Normalized"]
+    for fields in CANDIDATE_FIELD_GROUPS.values():
+        required_candidate_cols.extend(fields)
         
-    display_columns = [
-        'Company_Name_Normalized', 'Score', 'Best_Match', 'Company_Website_Final', 
-        'Products_Product_Families', 'Capabilities_Manufacturing', 
-        'Certifications_Website_Claims', 'Industries_Served'
-    ]
+    for col in set(required_candidate_cols):
+        if col not in scraped_df.columns:
+            scraped_df[col] = ""
     
-    display_columns = [col for col in display_columns if col in final_df.columns]
-    
-    return final_df[display_columns]
+    print("5. Scoring candidates with the similarity model...")
+    if not scraped_df.empty:
+        # Get the exact, clean output from the model (Top 3)
+        scored_results = similarity_model.score_candidates(scraped_df, top_k=3)
+        
+        # Set full_df strictly to this model output so the Excel is clean
+        full_df = scored_results.sort_values(by=['Candidate', 'Rank'])
+        
+        # --- Prepare the slim UI DataFrame ---
+        # We only want to merge Rank 1 results for the UI display
+        top_1_scores = scored_results[scored_results['Rank'] == 1]
+        ui_df = pd.merge(scraped_df, top_1_scores, left_on='Company_Name_Normalized', right_on='Candidate', how='left')
+        
+        ui_df['Score'] = ui_df['Ranking_Score'].apply(lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "0.00%")
+        ui_df['Best_Match'] = ui_df['Baseline_Match']
+        ui_df = ui_df.sort_values(by='Ranking_Score', ascending=False)
+        
+        # 6. Extract just the essentials for the UI Dataframe
+        display_columns = [
+            'Company_Name_Normalized', 'Score', 'Best_Match', 'Company_Website_Final'
+            # 'Products_Product_Families', 'Capabilities_Manufacturing', 'Certifications_Website_Claims', 'Industries_Served'
+        ]
+        
+        display_columns = [col for col in display_columns if col in ui_df.columns]
+        display_df = ui_df[display_columns]
+        
+    else:
+        display_df = pd.DataFrame()
+        full_df = pd.DataFrame()
+
+    return display_df, full_df
