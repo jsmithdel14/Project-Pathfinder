@@ -5,7 +5,6 @@ import io
 from main import run_pipeline 
 
 st.set_page_config(page_title="Pathfinder Dashboard", layout="wide")
-
 st.title("Team Exporter: Pathfinder Dashboard")
 
 st.sidebar.header("Configuration")
@@ -13,7 +12,6 @@ api_key = st.sidebar.text_input("Google API Key", type="password")
 query = st.sidebar.text_input("Search Query", "medical device manufacturing in Indiana")
 max_results = st.sidebar.slider("Max Candidates", 1, 60, 20)
 
-# Initialize session state so the app "remembers" the data across button clicks
 if 'display_df' not in st.session_state:
     st.session_state['display_df'] = pd.DataFrame()
 if 'full_df' not in st.session_state:
@@ -29,11 +27,9 @@ if st.button("Generate & Evaluate Candidates"):
             if display_df.empty:
                 st.warning("No candidates found. Check your search query or API key.")
             else:
-                # Store the results in session state
                 st.session_state['display_df'] = display_df
                 st.session_state['full_df'] = full_df
 
-# Only render the UI if we have data saved in the session state
 if not st.session_state['display_df'].empty:
     st.success("Pipeline complete!")
     
@@ -53,7 +49,6 @@ if not st.session_state['display_df'].empty:
         score = row.get('Score', '0.00%')
         match = row.get('Best_Match', 'None')
         
-        # Look up the detailed metrics for this specific candidate's top match
         detailed_row = full_df[(full_df['Candidate'] == company) & (full_df['Rank'] == 1)].iloc[0]
         
         with st.expander(f"Deep Dive: {company} - {score} Match"):
@@ -82,8 +77,7 @@ if not st.session_state['display_df'].empty:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         full_df.to_excel(writer, index=False, sheet_name='Detailed Results')
-    
-    # Because state is preserved, clicking this won't clear the screen
+
     st.download_button(
         label="Download Detailed Excel Report",
         data=buffer.getvalue(),

@@ -3,20 +3,24 @@ from candidate_generation import fetch_places_candidates
 from model import SimilarityModel, CANDIDATE_FIELD_GROUPS
 from pathlib import Path
 from candidate_scraper import crawl_site, infer_profile
+import streamlit as st
 
 script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent
 BASELINE_DATA_PATH = project_root / "Indiana_EXIM_Exporter_Profiles_working_v20.xlsx"
 
-def run_pipeline(api_key: str, query: str, max_results: int):
-    print("1. Loading verified EXIM baselines...")
+@st.cache_resource
+def load_fitted_model():
+    print("1. Loading verified EXIM baselines and fitting model (cached)...")
     baseline_df = pd.read_excel(BASELINE_DATA_PATH, sheet_name='Company Profiles')
-    
-    # 2. Initialize Model
     similarity_model = SimilarityModel()
     similarity_model.fit_baselines(baseline_df)
+    return similarity_model
 
-    print("3. Fetching candidates from Google Places...")
+def run_pipeline(api_key: str, query: str, max_results: int):
+    similarity_model = load_fitted_model()
+
+    print("Fetching candidates from Google Places...")
     candidates_df = fetch_places_candidates(api_key, query, max_results=max_results)
     
     if candidates_df.empty:
@@ -27,7 +31,7 @@ def run_pipeline(api_key: str, query: str, max_results: int):
 
     profiles = []
     
-    print(f"4. Profiling and scraping {len(candidates_df)} candidates...")
+    print(f"Profiling and scraping {len(candidates_df)} candidates...")
     for _, row in candidates_df.iterrows():
         company_name = row.get("name", "Unknown")
         website = row.get("website", "")
@@ -50,8 +54,7 @@ def run_pipeline(api_key: str, query: str, max_results: int):
         profiles.append(profile_data)
         
     scraped_df = pd.DataFrame(profiles)
-    
-    # Pad scraped_df with any missing columns required by the model's strict validation
+
     required_candidate_cols = ["Company_Name_Normalized"]
     for fields in CANDIDATE_FIELD_GROUPS.values():
         required_candidate_cols.extend(fields)
@@ -60,16 +63,12 @@ def run_pipeline(api_key: str, query: str, max_results: int):
         if col not in scraped_df.columns:
             scraped_df[col] = ""
     
-    print("5. Scoring candidates with the similarity model...")
+    print("Scoring candidates with the similarity model...")
     if not scraped_df.empty:
-        # Get the exact, clean output from the model (Top 3)
         scored_results = similarity_model.score_candidates(scraped_df, top_k=3)
         
-        # Set full_df strictly to this model output so the Excel is clean
         full_df = scored_results.sort_values(by=['Candidate', 'Rank'])
-        
-        # --- Prepare the slim UI DataFrame ---
-        # We only want to merge Rank 1 results for the UI display
+
         top_1_scores = scored_results[scored_results['Rank'] == 1]
         ui_df = pd.merge(scraped_df, top_1_scores, left_on='Company_Name_Normalized', right_on='Candidate', how='left')
         
@@ -77,7 +76,6 @@ def run_pipeline(api_key: str, query: str, max_results: int):
         ui_df['Best_Match'] = ui_df['Baseline_Match']
         ui_df = ui_df.sort_values(by='Ranking_Score', ascending=False)
         
-        # 6. Extract just the essentials for the UI Dataframe
         display_columns = [
             'Company_Name_Normalized', 'Score', 'Best_Match', 'Company_Website_Final'
             # 'Products_Product_Families', 'Capabilities_Manufacturing', 'Certifications_Website_Claims', 'Industries_Served'
