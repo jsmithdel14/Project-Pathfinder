@@ -4,6 +4,8 @@ import pandas as pd
 import io
 from main import run_pipeline 
 
+st.set_page_config(page_title="Pathfinder Dashboard", layout="wide")
+
 st.title("Team Exporter: Pathfinder Dashboard")
 
 st.sidebar.header("Configuration")
