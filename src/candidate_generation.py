@@ -3,13 +3,13 @@ import requests
 import pandas as pd
 
 def fetch_places_candidates(api_key, query, max_results):
-    # Using the New Places API endpoint not the old one
+    """Fetches candidate companies from the Google Places API based on a search query."""
     url = "https://places.googleapis.com/v1/places:searchText"
     
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
-        # Request only the exact fields we need, this keeps costs low
+        # Important: Request only the exact fields we need to keep api costs down
         "X-Goog-FieldMask": "places.displayName.text,places.formattedAddress,places.websiteUri,nextPageToken"
     }
     
@@ -19,6 +19,8 @@ def fetch_places_candidates(api_key, query, max_results):
     while len(results) < max_results:
         payload = {
             "textQuery": query,
+            "includedType": "manufacturer",
+            "strictTypeFiltering": True,
             "pageSize": 20
         }
         

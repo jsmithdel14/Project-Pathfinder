@@ -46,7 +46,7 @@ if not st.session_state['display_df'].empty:
     
     for _, row in top_candidates.iterrows():
         company = row.get('Company_Name_Normalized', 'Unknown')
-        score = row.get('Score', '0.00%')
+        score = row.get('Composite_Readiness', '0.00%')
         match = row.get('Best_Match', 'None')
         
         detailed_row = full_df[(full_df['Candidate'] == company) & (full_df['Rank'] == 1)].iloc[0]

@@ -35,22 +35,22 @@ Important limitations:
 """
 from __future__ import annotations
 
-import argparse
 import re
 import time
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urljoin, urlparse, urlunparse
 
-import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+
+EXPORT_TERMS = {
+    "export", "exports", "exporting", "exported", "international",
+    "worldwide", "global", "overseas", "foreign", "distributors worldwide",
+    "customs", "incoterms", "itar", "freight forwarding"
+}
 
 USER_AGENT = (
     "Mozilla/5.0 (compatible; CompanyProfileResearchBot/1.0; "
@@ -97,52 +97,52 @@ NEGATIVE_LINK_TERMS = {
     "privacy", "terms", "cookie", "login", "cart", "checkout", "account",
     "careers", "jobs", "news", "blog", "events", "press", "investors",
     "facebook", "linkedin", "instagram", "youtube", "mailto:", "tel:",
-    "wp-json", "feed", "tag", "author", "search", "sitemap"
+    "wp-json", "feed", "tag", "author", "search", "sitemap",
 }
 
 PRODUCT_TERMS = {
     "product", "products", "equipment", "systems", "components", "ingredients",
     "materials", "devices", "software", "platform", "solutions", "models",
-    "brands", "portfolio", "offerings"
+    "brands", "portfolio", "offerings",
 }
 
 MANUFACTURING_TERMS = {
     "manufacturing", "manufacture", "fabrication", "fabricate", "machining",
     "assembly", "molding", "casting", "forming", "welding", "coating",
-    "production", "plant", "factory", "facility", "facilities", "processing"
+    "production", "plant", "factory", "facility", "facilities", "processing",
 }
 
 ENGINEERING_TERMS = {
     "engineering", "engineered", "design", "cad", "development", "prototype",
-    "prototyping", "research and development", "r&d", "technical center"
+    "prototyping", "research and development", "r&d", "technical center",
 }
 
 CUSTOM_OEM_TERMS = {
     "custom", "customized", "oem", "private label", "contract manufacturing",
-    "co-manufacturing", "co-packing", "build to print", "made to order"
+    "co-manufacturing", "co-packing", "build to print", "made to order",
 }
 
 SERVICE_TESTING_TERMS = {
     "testing", "inspection", "installation", "repair", "maintenance", "training",
     "support", "laboratory", "validation", "calibration", "quality assurance",
-    "distribution", "logistics", "technical service"
+    "distribution", "logistics", "technical service",
 }
 
 INDUSTRY_TERMS = {
     "industries", "industry", "markets", "market", "applications", "served",
     "customers", "sectors", "aerospace", "automotive", "defense", "medical",
     "healthcare", "food", "agriculture", "construction", "energy", "industrial",
-    "transportation", "government", "marine", "telecommunications"
+    "transportation", "government", "marine", "telecommunications",
 }
 
 IDENTITY_TERMS = {
     "parent company", "subsidiary", "division of", "doing business as", "dba",
-    "formerly", "previously", "acquired by", "acquisition", "rebranded", "brand of"
+    "formerly", "previously", "acquired by", "acquisition", "rebranded", "brand of",
 }
 
 STATUS_TERMS = {
     "closed", "ceased operations", "discontinued production", "dissolved",
-    "liquidation", "no longer operating", "wind down", "winding down"
+    "liquidation", "no longer operating", "wind down", "winding down",
 }
 
 CERT_PATTERNS = [
@@ -193,34 +193,8 @@ def clean_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def clean_name(value: object) -> str:
-    name = clean_text(value)
-    return re.sub(r"\s*,\s*", ", ", name)
-
-
-def canonical_key(name: str) -> str:
-    value = name.lower().replace("&", "and")
-    value = re.sub(
-        r"\b(incorporated|corporation|company|limited|inc|corp|co|llc|ltd)\b",
-        "",
-        value,
-    )
-    return re.sub(r"[^a-z0-9]+", "", value)
-
-
-def normalize_website(value: object) -> str:
-    url = clean_text(value)
-    if not url:
-        return ""
-    if not re.match(r"^https?://", url, flags=re.I):
-        url = "https://" + url
-    parsed = urlparse(url)
-    path = parsed.path or "/"
-    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "", ""))
-
-
 def host_key(url: str) -> str:
-    host = urlparse(url).netloc.lower().split("@")[ -1].split(":")[0]
+    host = urlparse(url).netloc.lower().split("@")[-1].split(":")[0]
     return host.removeprefix("www.")
 
 
@@ -234,51 +208,6 @@ def normalize_link(url: str) -> str:
     path = re.sub(r"/{2,}", "/", p.path or "/")
     return urlunparse((p.scheme.lower(), p.netloc.lower(), path, "", p.query, ""))
 
-
-# -----------------------------------------------------------------------------
-# EDIT THIS LIST ONLY
-# Each company is: [company_name, website, city]
-# Indiana is hard-coded for every company.
-# -----------------------------------------------------------------------------
-COMPANIES = [
-    ["J&M Manufacturing", "https://jm-inc.com/", "Berne"],
-    #["Sample Industries LLC", "https://www.sample.com", "Indianapolis"],
-    #["Demo Technologies", "https://www.demo.com", "Carmel"],
-]
-
-
-def load_roster() -> pd.DataFrame:
-    """Build the research roster from the hard-coded COMPANIES list."""
-    if not isinstance(COMPANIES, list):
-        raise TypeError("COMPANIES must be a list")
-
-    rows = []
-    for index, item in enumerate(COMPANIES, start=1):
-        if not isinstance(item, (list, tuple)) or len(item) != 3:
-            raise ValueError(
-                f"COMPANIES item {index} must contain exactly 3 values: "
-                "[company_name, website, city]"
-            )
-        company_name, website, city = item
-        company_name = clean_name(company_name)
-        website = normalize_website(website)
-        city = clean_text(city)
-        if not company_name or not website or not city:
-            raise ValueError(
-                f"COMPANIES item {index} has a blank value; company, website, and city are required"
-            )
-        rows.append({
-            "company_name": company_name,
-            "website": website,
-            "city": city,
-            "Company_Name_Normalized": company_name,
-            "Company_Website_Input": website,
-            "City_Normalized": city,
-            "State_Normalized": "Indiana",
-            "Company_Key": canonical_key(company_name),
-        })
-
-    return pd.DataFrame(rows).drop_duplicates(["Company_Key", "Company_Website_Input"])
 
 def fetch_page(session: requests.Session, url: str, timeout: int) -> tuple[requests.Response | None, str]:
     try:
@@ -498,7 +427,7 @@ def unique_urls(records: Iterable[EvidenceRecord]) -> str:
 
 
 def infer_profile(
-    row: pd.Series,
+    row: Mapping[str, Any],
     pages: list[PageRecord],
 ) -> tuple[dict, list[EvidenceRecord]]:
     company = row["Company_Name_Normalized"]
@@ -511,6 +440,7 @@ def infer_profile(
         "industries": INDUSTRY_TERMS,
         "identity": IDENTITY_TERMS,
         "status": STATUS_TERMS,
+        "export": EXPORT_TERMS
     }
 
     evidence: dict[str, list[EvidenceRecord]] = {
@@ -580,6 +510,7 @@ def infer_profile(
         "Capabilities_Engineering_Design": summarize_evidence(evidence["engineering_design"], 4),
         "Capabilities_Custom_OEM": summarize_evidence(evidence["custom_oem"], 4),
         "Capabilities_Services_Testing": summarize_evidence(evidence["services_testing"], 4),
+        "Export_International_Evidence": summarize_evidence(evidence["export"], 4),
         "Certifications_Website_Claims": summarize_evidence(evidence["certifications"], 6),
         "Certification_Scope": "Review cited page; not independently authenticated",
         "Industries_Served": summarize_evidence(evidence["industries"], 5),
@@ -594,92 +525,6 @@ def infer_profile(
             "news, transaction databases, or third-party sources."
         ),
         "Manual_Review_Reason": "; ".join(review_reasons) or "Quick QA recommended",
-        "Research_Timestamp_UTC": datetime.now(timezone.utc).isoformat(),
+        "Research_Timestamp_UTC": datetime.now(timezone.utc).isoformat()
     }
     return profile, all_evidence
-
-
-def format_workbook(path: Path) -> None:
-    workbook = load_workbook(path)
-    for sheet in workbook.worksheets:
-        sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = sheet.dimensions
-        for cell in sheet[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F4E78")
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-        for col in range(1, sheet.max_column + 1):
-            max_len = max(
-                len(str(sheet.cell(row, col).value or ""))
-                for row in range(1, min(sheet.max_row, 60) + 1)
-            )
-            sheet.column_dimensions[get_column_letter(col)].width = min(60, max(12, max_len + 2))
-        for row in sheet.iter_rows(min_row=2):
-            for cell in row:
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
-    workbook.save(path)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Research hard-coded Indiana company websites without a search API.")
-    parser.add_argument("--output", type=Path, default=Path("company_profiles_website_first.xlsx"))
-    parser.add_argument("--max-pages", type=int, default=15)
-    parser.add_argument("--timeout", type=int, default=30)
-    parser.add_argument("--delay", type=float, default=0.4)
-    parser.add_argument("--limit", type=int, default=0, help="Testing only; 0 processes all rows")
-    args = parser.parse_args()
-
-    roster = load_roster()
-    if args.limit:
-        roster = roster.head(args.limit)
-
-    profiles: list[dict] = []
-    page_rows: list[dict] = []
-    evidence_rows: list[dict] = []
-
-    for number, (_, row) in enumerate(roster.iterrows(), 1):
-        company = row["Company_Name_Normalized"]
-        website = row["Company_Website_Input"]
-        print(f"[{number}/{len(roster)}] Crawling {company}: {website}")
-
-        pages = crawl_site(
-            company=company,
-            seed_url=website,
-            max_pages=max(1, args.max_pages),
-            timeout=max(5, args.timeout),
-            delay=max(0, args.delay),
-        )
-        profile, evidence = infer_profile(row, pages)
-        profiles.append(profile)
-        page_rows.extend(asdict(page) for page in pages)
-        evidence_rows.extend(asdict(item) for item in evidence)
-
-    profile_df = pd.DataFrame(profiles)
-    page_df = pd.DataFrame(page_rows)
-    evidence_df = pd.DataFrame(evidence_rows)
-    review_df = profile_df[
-        profile_df["Confidence"].isin(["Low", "Medium"])
-        | profile_df["Manual_Review_Reason"].str.contains(
-            "inaccessible|closure|Parent|DBA|former-name|acquisition",
-            case=False,
-            na=False,
-        )
-    ].copy()
-
-    output = args.output.resolve()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        profile_df.to_excel(writer, index=False, sheet_name="Company Profiles")
-        evidence_df.to_excel(writer, index=False, sheet_name="Evidence")
-        page_df.to_excel(writer, index=False, sheet_name="Crawled Pages")
-        review_df.to_excel(writer, index=False, sheet_name="Manual Review Queue")
-        roster.to_excel(writer, index=False, sheet_name="Normalized Roster")
-
-    format_workbook(output)
-    print(
-        f"Saved {output} | profiles={len(profile_df)} | "
-        f"pages={len(page_df)} | evidence={len(evidence_df)} | review_queue={len(review_df)}"
-    )
-
-
-if __name__ == "__main__":
-    main()

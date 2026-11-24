@@ -37,7 +37,7 @@ Click Download Detailed Excel Report at the bottom of the page to save a spreads
 1. Ensure dependencies/libraries are installed in your python environment, they can be found in requirements.txt
     - For example run: "pip install -r requirements.txt" to install dependencies
 2. Launch the Streamlit app
-    - Run: "streamlit run interface.py" in your python environment at the src folder, this will open the streamlit dashboard
+    - Run: "streamlit run app.py" in your python environment at the src folder, this will open the streamlit dashboard
 3. Use the dashboard
     - You have to ensure you have a valid google place API key which can be found here: https://developers.google.com/maps/documentation/places/web-service/get-api-key
     - After inserting that you can adjust the query. Note by default this looks at farming equipment manufactors in Indiana, specifying the place and type of company is important to get strong candidates. Not all types of companies have strong baseline companies the model can use so results vary across industries.
