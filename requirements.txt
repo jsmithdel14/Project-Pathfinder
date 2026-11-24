@@ -3,5 +3,6 @@ pandas
 openpyxl
 requests
 beautifulsoup4
-sentence-transformers
+lxml
 torch
+sentence-transformers
